@@ -45,9 +45,11 @@ pip install openapi-spec-validator pyyaml
 ```
 
 ## Запуск:
-
+```
 python scripts/validation_OAS.py artifacts/openapi.yaml
+```
 
 ## Ожидаемый результат:
-
+```
 OAS valid
+```
