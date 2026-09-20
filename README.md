@@ -12,7 +12,7 @@
 4. OpenAPI Specification (OAS) — контракты API.
 
 ## Структура репозитория
-
+```
 cashback-prompts/
 ├── README.md
 ├── prompts.md
@@ -25,7 +25,7 @@ cashback-prompts/
 │ │ └── note.md
 ├── scripts/
 │ └── validation_OAS.py
-
+```
 
 ## Ограничения проекта
 
