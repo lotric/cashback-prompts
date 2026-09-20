@@ -1,303 +1,294 @@
-# Sequence-диаграммы: «Ядро начисления кэшбэка»
+# ER-диаграмма: «Ядро начисления кэшбэка»
 
-> Выплата показана как выплата доступного остатка по начисленному кэшбэку. Новые статусы транзакций не вводятся.
+> **Нормализация:** 3НФ.  
+> **Сущности:** `Transaction`, `CashbackRule`, `CashbackAccrual`, `Limit`, `Currency`, `Commission`, `Payout`, `StatusHistory`.  
+> **Дополнительно:** `PayoutAccrual` — связующая сущность для M:N между `Payout` и `CashbackAccrual` (требуется для 3НФ, иначе сумма выплаты дублировала бы состав начислений).
 
 ---
 
-## 1. Начисление кэшбэка (`COMPLETED`)
-
-### Mermaid
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant TS as Transaction Source
-    participant CC as Cashback Core
-    participant Calc as Commission Calculator
-    participant Conv as Currency Converter
-    participant Lim as Limit Service
-    participant L as Ledger
-    participant N as Notification
-    participant R as Reporting
-
-    TS->>CC: Событие транзакции: tx_id, amount, currency, commission_type, commission_value, status
-    CC->>CC: Проверка статуса транзакции
-
-    alt Статус не COMPLETED
-        CC-->>TS: Нет начисления для NEW PROCESSING CANCELLED REFUNDED FAILED
-    else Статус COMPLETED
-        CC->>CC: Проверка валюты RUB USD EUR
-
-        alt Валюта не поддерживается
-            CC-->>TS: Отказ - валюта не поддерживается
-        else Валюта поддерживается
-            CC->>CC: Проверка идемпотентности по tx_id
-
-            alt Уже есть начисление
-                CC-->>TS: Повторное начисление запрещено
-            else Начисления нет
-                CC->>Calc: Рассчитать базу по типу комиссии
-                Calc-->>CC: none amount, fixed amount минус fixed, percent amount минус percent
-
-                opt Валюта USD или EUR
-                    CC->>Conv: Привести к RUB для проверки лимита
-                    Conv-->>CC: RUB-эквивалент
-                end
-
-                CC->>Lim: Применить лимит 500 000 RUB
-                Lim-->>CC: Кэшбэк равен минимуму из расчёта и 500 000 RUB
-                CC->>CC: Округлить до 2 знаков после запятой
-
-                CC->>L: Записать начисление: tx_id, сумма, валюта, статус COMPLETED
-                L-->>CC: Начисление зафиксировано
-
-                CC->>N: Уведомить клиента: сумма, валюта, статус COMPLETED
-                CC->>R: Передать данные для отчётности
-            end
-        end
-    end
-```
-
-### PlantUML
+## 1. PlantUML ER
 
 ```plantuml
 @startuml
-autonumber
-participant "Transaction Source" as TS
-participant "Cashback Core" as CC
-participant "Commission Calculator" as Calc
-participant "Currency Converter" as Conv
-participant "Limit Service" as Lim
-participant Ledger as L
-participant Notification as N
-participant Reporting as R
+hide methods
+hide stereotypes
+skinparam linetype ortho
 
-TS -> CC: Событие транзакции: tx_id, status=COMPLETED, amount, currency, commission_type, commission_value
-CC -> CC: Проверка статуса = COMPLETED
+entity "Currency" as Currency {
+  * currency_code : CHAR(3) <<PK>>
+  --
+  * name : VARCHAR
+  * is_active : BOOLEAN
+}
 
-alt Статус != COMPLETED
-    CC --> TS: Нет начисления (NEW, PROCESSING, CANCELLED, REFUNDED, FAILED)
-else Статус = COMPLETED
-    CC -> CC: Проверка валюты в {RUB, USD, EUR}
+entity "Commission" as Commission {
+  * commission_id : UUID <<PK>>
+  --
+  * commission_type : ENUM(fixed, percent, none)
+  fixed_value : NUMERIC
+  percent_value : NUMERIC
+  * currency_code : CHAR(3) <<FK>>
+}
 
-    alt Валюта не поддерживается
-        CC --> TS: Отказ: валюта не поддерживается
-    else Валюта поддерживается
-        CC -> CC: Проверка идемпотентности по tx_id
+entity "Transaction" as Transaction {
+  * transaction_id : UUID <<PK>>
+  --
+  * amount : NUMERIC
+  * status : ENUM(NEW, PROCESSING, COMPLETED, CANCELLED, REFUNDED, FAILED)
+  * currency_code : CHAR(3) <<FK>>
+  * commission_id : UUID <<FK>>
+  * created_at : TIMESTAMP
+  * updated_at : TIMESTAMP
+}
 
-        alt Уже есть начисление
-            CC --> TS: Повторное начисление запрещено
-        else Начисления нет
-            CC -> Calc: Рассчитать базу
-            Calc --> CC: none: amount; fixed: amount-fixed; percent: amount-percent
+entity "StatusHistory" as StatusHistory {
+  * status_history_id : UUID <<PK>>
+  --
+  * transaction_id : UUID <<FK>>
+  * status_from : ENUM(NEW, PROCESSING, COMPLETED, CANCELLED, REFUNDED, FAILED)
+  * status_to : ENUM(NEW, PROCESSING, COMPLETED, CANCELLED, REFUNDED, FAILED)
+  * changed_at : TIMESTAMP
+  reason : VARCHAR
+}
 
-            opt Валюта USD или EUR
-                CC -> Conv: Привести к RUB для лимита
-                Conv --> CC: RUB-эквивалент
-            end
+entity "CashbackRule" as CashbackRule {
+  * rule_id : UUID <<PK>>
+  --
+  * name : VARCHAR
+  * rate : NUMERIC
+  * currency_code : CHAR(3) <<FK>>
+  * valid_from : DATE
+  valid_to : DATE
+  * is_active : BOOLEAN
+}
 
-            CC -> Lim: Применить лимит 500 000 RUB
-            Lim --> CC: Кэшбэк = min(расчёт, 500 000 RUB)
-            CC -> CC: Округлить до 2 знаков
+entity "CashbackAccrual" as CashbackAccrual {
+  * accrual_id : UUID <<PK>>
+  --
+  * transaction_id : UUID <<FK>>
+  * rule_id : UUID <<FK>>
+  * base_amount : NUMERIC
+  * cashback_amount : NUMERIC
+  * currency_code : CHAR(3) <<FK>>
+  * state : ENUM(accrued, reversed)
+  * created_at : TIMESTAMP
+  reversed_at : TIMESTAMP
+}
 
-            CC -> L: Записать начисление (статус COMPLETED)
-            L --> CC: Начисление зафиксировано
+entity "Limit" as Limit {
+  * limit_id : UUID <<PK>>
+  --
+  * accrual_id : UUID <<FK>>
+  * currency_code : CHAR(3) <<FK>>
+  * max_amount : NUMERIC
+  * applied_amount : NUMERIC
+  * is_capped : BOOLEAN
+}
 
-            CC -> N: Уведомить клиента: сумма, валюта, COMPLETED
-            CC -> R: Передать данные для отчётности
-        end
-    end
-end
+entity "Payout" as Payout {
+  * payout_id : UUID <<PK>>
+  --
+  * customer_ref : VARCHAR
+  * amount : NUMERIC
+  * currency_code : CHAR(3) <<FK>>
+  * status : ENUM(created, confirmed, paid, failed)
+  * created_at : TIMESTAMP
+}
+
+entity "PayoutAccrual" as PayoutAccrual {
+  * payout_id : UUID <<PK, FK>>
+  * accrual_id : UUID <<PK, FK>>
+  --
+  * linked_at : TIMESTAMP
+}
+
+Currency ||--o{ Commission : "валюта комиссии"
+Currency ||--o{ Transaction : "валюта транзакции"
+Currency ||--o{ CashbackRule : "валюта правила"
+Currency ||--o{ CashbackAccrual : "валюта начисления"
+Currency ||--o{ Limit : "валюта лимита"
+Currency ||--o{ Payout : "валюта выплаты"
+
+Commission ||--o{ Transaction : "применена к транзакции"
+
+Transaction ||--o{ StatusHistory : "история статусов"
+Transaction ||--o| CashbackAccrual : "начисление по транзакции"
+
+CashbackRule ||--o{ CashbackAccrual : "правило начисления"
+
+CashbackAccrual ||--o| Limit : "лимит начисления"
+CashbackAccrual ||--o{ PayoutAccrual : "входит в выплату"
+
+Payout ||--o{ PayoutAccrual : "состав выплаты"
+
 @enduml
 ```
 
 ---
 
-## 2. Отмена / возврат / ошибка (`CANCELLED`, `REFUNDED`, `FAILED`)
-
-### Mermaid
+## 2. Mermaid `erDiagram`
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    participant TS as Transaction Source
-    participant CC as Cashback Core
-    participant L as Ledger
-    participant N as Notification
-    participant R as Reporting
+erDiagram
+    CURRENCY {
+        char3 currency_code PK
+        varchar name
+        boolean is_active
+    }
 
-    TS->>CC: Событие смены статуса: tx_id, status
-    CC->>CC: Проверка статуса
+    COMMISSION {
+        uuid commission_id PK
+        enum commission_type
+        numeric fixed_value
+        numeric percent_value
+        char3 currency_code FK
+    }
 
-    alt CANCELLED или FAILED
-        CC->>L: Проверить начисление по tx_id
+    TRANSACTION {
+        uuid transaction_id PK
+        numeric amount
+        enum status
+        char3 currency_code FK
+        uuid commission_id FK
+        timestamp created_at
+        timestamp updated_at
+    }
 
-        alt Начисления нет
-            CC-->>TS: Кэшбэк не начислялся
-        else Начисление есть
-            CC->>L: Сторнировать начисление
-            L-->>CC: Сторно зафиксировано
-            CC->>N: Уведомить клиента: сторно, статус CANCELLED или FAILED
-            CC->>R: Передать сторно в отчётность
-        end
+    STATUS_HISTORY {
+        uuid status_history_id PK
+        uuid transaction_id FK
+        enum status_from
+        enum status_to
+        timestamp changed_at
+        varchar reason
+    }
 
-    else REFUNDED
-        CC->>L: Проверить начисление по tx_id
+    CASHBACK_RULE {
+        uuid rule_id PK
+        varchar name
+        numeric rate
+        char3 currency_code FK
+        date valid_from
+        date valid_to
+        boolean is_active
+    }
 
-        alt Начисления нет
-            CC-->>TS: Сторно не требуется
-        else Начисление есть
-            CC->>L: Сторнировать начисление
-            L-->>CC: Сторно зафиксировано
-            CC->>N: Уведомить клиента: сторно, статус REFUNDED
-            CC->>R: Передать сторно в отчётность
-        end
+    CASHBACK_ACCRUAL {
+        uuid accrual_id PK
+        uuid transaction_id FK
+        uuid rule_id FK
+        numeric base_amount
+        numeric cashback_amount
+        char3 currency_code FK
+        enum state
+        timestamp created_at
+        timestamp reversed_at
+    }
 
-    else NEW или PROCESSING или COMPLETED
-        CC-->>TS: Статус не требует сторно
-    end
-```
+    LIMIT {
+        uuid limit_id PK
+        uuid accrual_id FK
+        char3 currency_code FK
+        numeric max_amount
+        numeric applied_amount
+        boolean is_capped
+    }
 
-### PlantUML
+    PAYOUT {
+        uuid payout_id PK
+        varchar customer_ref
+        numeric amount
+        char3 currency_code FK
+        enum status
+        timestamp created_at
+    }
 
-```plantuml
-@startuml
-autonumber
-participant "Transaction Source" as TS
-participant "Cashback Core" as CC
-participant Ledger as L
-participant Notification as N
-participant Reporting as R
+    PAYOUT_ACCRUAL {
+        uuid payout_id PK
+        uuid accrual_id PK
+        timestamp linked_at
+    }
 
-TS -> CC: Событие смены статуса: tx_id, status=CANCELLED/REFUNDED/FAILED
-CC -> CC: Проверка статуса
+    CURRENCY ||--o{ COMMISSION : "валюта комиссии"
+    CURRENCY ||--o{ TRANSACTION : "валюта транзакции"
+    CURRENCY ||--o{ CASHBACK_RULE : "валюта правила"
+    CURRENCY ||--o{ CASHBACK_ACCRUAL : "валюта начисления"
+    CURRENCY ||--o{ LIMIT : "валюта лимита"
+    CURRENCY ||--o{ PAYOUT : "валюта выплаты"
 
-alt CANCELLED или FAILED
-    CC -> L: Проверить начисление по tx_id
+    COMMISSION ||--o{ TRANSACTION : "применена к транзакции"
 
-    alt Начисления нет
-        CC --> TS: Кэшбэк не начислялся
-    else Начисление есть
-        CC -> L: Сторнировать начисление
-        L --> CC: Сторно зафиксировано
-        CC -> N: Уведомить клиента: сторно, CANCELLED/FAILED
-        CC -> R: Передать сторно в отчётность
-    end
+    TRANSACTION ||--o{ STATUS_HISTORY : "история статусов"
+    TRANSACTION ||--o| CASHBACK_ACCRUAL : "начисление по транзакции"
 
-else REFUNDED
-    CC -> L: Проверить начисление по tx_id
+    CASHBACK_RULE ||--o{ CASHBACK_ACCRUAL : "правило начисления"
 
-    alt Начисления нет
-        CC --> TS: Сторно не требуется
-    else Начисление есть
-        CC -> L: Сторнировать начисление
-        L --> CC: Сторно зафиксировано
-        CC -> N: Уведомить клиента: сторно, REFUNDED
-        CC -> R: Передать сторно в отчётность
-    end
+    CASHBACK_ACCRUAL ||--o| LIMIT : "лимит начисления"
+    CASHBACK_ACCRUAL ||--o{ PAYOUT_ACCRUAL : "входит в выплату"
 
-else NEW, PROCESSING, COMPLETED
-    CC --> TS: Статус не требует сторно
-end
-@enduml
+    PAYOUT ||--o{ PAYOUT_ACCRUAL : "состав выплаты"
 ```
 
 ---
 
-## 3. Выплата кэшбэка
+## 3. Пояснения по сущностям
 
-### Mermaid
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as Клиент
-    participant CC as Cashback Core
-    participant L as Ledger
-    participant P as Payout Service
-    participant N as Notification
-    participant R as Reporting
-
-    C->>CC: Запрос выплаты кэшбэка
-    CC->>CC: Проверка валюты RUB USD EUR
-
-    alt Валюта не поддерживается
-        CC-->>C: Выплата недоступна
-    else Валюта поддерживается
-        CC->>L: Запросить доступный остаток начислено минус сторно минус выплачено
-        L-->>CC: Доступная сумма
-
-        alt Доступная сумма больше нуля
-            CC->>P: Инициировать выплату: сумма, валюта
-            P-->>CC: Выплата подтверждена
-
-            CC->>L: Зафиксировать выплату
-            L-->>CC: Выплата зафиксирована
-
-            CC->>N: Уведомить клиента: выплата исполнена
-            CC->>R: Передать данные о выплате
-        else Доступная сумма равна нулю
-            CC-->>C: Выплата недоступна
-        end
-    end
-```
-
-### PlantUML
-
-```plantuml
-@startuml
-autonumber
-actor Клиент as C
-participant "Cashback Core" as CC
-participant Ledger as L
-participant "Payout Service" as P
-participant Notification as N
-participant Reporting as R
-
-C -> CC: Запрос выплаты кэшбэка
-CC -> CC: Проверка валюты в {RUB, USD, EUR}
-
-alt Валюта не поддерживается
-    CC --> C: Выплата недоступна
-else Валюта поддерживается
-    CC -> L: Запросить доступный остаток: начислено - сторно - выплачено
-    L --> CC: Доступная сумма
-
-    alt Доступная сумма > 0
-        CC -> P: Инициировать выплату: сумма, валюта
-        P --> CC: Выплата подтверждена
-
-        CC -> L: Зафиксировать выплату
-        L --> CC: Выплата зафиксирована
-
-        CC -> N: Уведомить клиента: выплата исполнена
-        CC -> R: Передать данные о выплате
-    else Доступная сумма = 0
-        CC --> C: Выплата недоступна
-    end
-end
-@enduml
-```
+| Сущность | Назначение | Ключ | Связи |
+|---|---|---|---|
+| `Currency` | Справочник валют: RUB, USD, EUR | `currency_code` | 1:N к Commission, Transaction, CashbackRule, CashbackAccrual, Limit, Payout |
+| `Commission` | Тип и параметры комиссии: fixed, percent, none | `commission_id` | N:1 к Currency; 1:N к Transaction |
+| `Transaction` | Транзакция клиента | `transaction_id` | N:1 к Currency, Commission; 1:N к StatusHistory; 1:0..1 к CashbackAccrual |
+| `StatusHistory` | История смены статусов транзакции | `status_history_id` | N:1 к Transaction |
+| `CashbackRule` | Правило начисления кэшбэка | `rule_id` | N:1 к Currency; 1:N к CashbackAccrual |
+| `CashbackAccrual` | Начисление или сторно кэшбэка по транзакции | `accrual_id` | N:1 к Transaction, CashbackRule, Currency; 1:0..1 к Limit; 1:N к PayoutAccrual |
+| `Limit` | Применённый лимит `500 000 RUB` | `limit_id` | N:1 к CashbackAccrual, Currency |
+| `Payout` | Выплата кэшбэка клиенту | `payout_id` | N:1 к Currency; 1:N к PayoutAccrual |
+| `PayoutAccrual` | Состав выплаты (M:N) | `(payout_id, accrual_id)` | N:1 к Payout, CashbackAccrual |
 
 ---
 
-## Самопроверка
+## 4. Соответствие Sequence → ER
 
-| Требование BRD | Где отражено |
-|---|---|
-| Валюты `RUB`, `USD`, `EUR` | Начисление, выплата: проверка валюты |
-| Лимит `500 000 RUB` | Начисление: `Limit Service`, минимум из расчёта и `500 000 RUB` |
-| Комиссия `none` | Начисление: база = `amount` |
-| Комиссия `fixed` | Начисление: база = `amount минус fixed` |
-| Комиссия `percent` | Начисление: база = `amount минус percent` |
-| `NEW` | Начисление: нет начисления; отмена/возврат: сторно не требуется |
-| `PROCESSING` | Начисление: нет начисления; отмена/возврат: сторно не требуется |
-| `COMPLETED` | Начисление: начисляется; отмена/возврат: сторно не требуется |
-| `CANCELLED` | Отмена/возврат: нет начисления или сторно |
-| `REFUNDED` | Отмена/возврат: сторно ранее начисленного |
-| `FAILED` | Отмена/возврат: нет начисления или сторно |
-| Округление до 2 знаков | Начисление: `Округлить до 2 знаков` |
-| Идемпотентность | Начисление: проверка повторного начисления по `tx_id` |
-| Уведомление клиента | Начисление, отмена/возврат, выплата |
-| Отчётность | Начисление, отмена/возврат, выплата |
-| Статусы транзакций | Используются только `NEW`, `PROCESSING`, `COMPLETED`, `CANCELLED`, `REFUNDED`, `FAILED` |
+| Участник Sequence | Сущность ER | Комментарий |
+|---|---|---|
+| Transaction Source | `Transaction` + `StatusHistory` | Источник события транзакции и её статусов |
+| Cashback Core | — | Логика; не хранит состояние, работает с сущностями ниже |
+| Commission Calculator | `Commission` | Тип комиссии и параметры |
+| Currency Converter | `Currency` | Справочник валют; курсы — вне скоупа BRD |
+| Limit Service | `Limit` | Применённый лимит `500 000 RUB` |
+| Ledger | `CashbackAccrual` | Начисление и сторно |
+| Notification | — | Уведомления; состояние не хранит |
+| Reporting | `CashbackAccrual`, `Payout`, `StatusHistory` | Источники данных для отчётности |
+| Payout Service | `Payout` + `PayoutAccrual` | Выплата и её состав |
+| CashbackRule (BRD) | `CashbackRule` | Ставка кэшбэка задаётся продуктом |
+
+---
+
+## 5. Приведение к 3НФ
+
+| НФ | Проверка | Результат |
+|---|---|---|
+| 1НФ | Все атрибуты атомарны; повторяющихся групп нет | ✅ |
+| 2НФ | Все неключевые атрибуты зависят от полного первичного ключа; в `PayoutAccrual` ключ составной, атрибут `linked_at` зависит от полного ключа | ✅ |
+| 3НФ | Транзитивных зависимостей нет: `currency_code` вынесен в `Currency`; `commission_type` вынесен в `Commission`; состав выплаты вынесен в `PayoutAccrual`; лимит вынесен в `Limit` | ✅ |
+
+**Устранённые транзитивные зависимости:**
+
+- Валюта транзакции/комиссии/правила/начисления/лимита/выплаты → вынесена в `Currency`.
+- Тип и параметры комиссии → вынесены в `Commission`.
+- Состав выплаты (какие начисления входят) → вынесен в `PayoutAccrual`.
+- Применённый лимит по начислению → вынесен в `Limit`.
+
+---
+
+## 6. Самопроверка
+
+- [x] Все сущности из Sequence отражены: `Transaction`, `CashbackRule`, `CashbackAccrual`, `Limit`, `Currency`, `Commission`, `Payout`, `StatusHistory`.
+- [x] Дополнительно добавлена `PayoutAccrual` для устранения M:N и соответствия 3НФ.
+- [x] Все валюты ограничены `RUB`, `USD`, `EUR` (в `Currency`).
+- [x] Типы комиссий ограничены `fixed`, `percent`, `none` (в `Commission`).
+- [x] Статусы ограничены `NEW`, `PROCESSING`, `COMPLETED`, `CANCELLED`, `REFUNDED`, `FAILED` (в `Transaction` и `StatusHistory`).
+- [x] Лимит `500 000 RUB` отражён в `Limit.max_amount`.
+- [x] Сторно отражено в `CashbackAccrual.state` и `CashbackAccrual.reversed_at`.
+- [x] Идемпотентность обеспечена связью `Transaction 1:0..1 CashbackAccrual`.
+- [x] Технические детали API/БД не раскрыты — только логическая модель данных.
