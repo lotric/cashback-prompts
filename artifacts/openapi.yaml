@@ -1,6 +1,3 @@
-# OpenAPI 3.1 Specification: «Ядро начисления кэшбэка»
-
-```yaml
 openapi: 3.1.0
 info:
   title: Cashback Core API
@@ -654,44 +651,3 @@ components:
               issue:
                 type: string
                 example: Допустимые значения RUB, USD, EUR
-```
-
----
-
-## Самопроверка
-
-### Покрытие сущностей ER в `components.schemas`
-
-| Сущность ER | Схема OAS | Статус |
-|---|---|---|
-| `Currency` | `Currency`, `CurrencyCode` | ✅ |
-| `Commission` | `Commission`, `CommissionType` | ✅ |
-| `Transaction` | `Transaction`, `TransactionCreateRequest`, `TransactionResponse`, `TransactionStatus` | ✅ |
-| `StatusHistory` | `StatusHistory` | ✅ |
-| `CashbackRule` | `CashbackRule` | ✅ |
-| `CashbackAccrual` | `CashbackAccrual`, `AccrualState`, `CashbackAccrualListResponse` | ✅ |
-| `Limit` | `Limit`, `LimitListResponse` | ✅ |
-| `Payout` | `Payout`, `PayoutStatus`, `PayoutCreateRequest`, `PayoutResponse` | ✅ |
-| `PayoutAccrual` | `PayoutAccrual` | ✅ |
-
-### Покрытие кодов ответов
-
-| Эндпоинт | 200 | 400 | 404 | 409 | 500 |
-|---|---|---|---|---|---|
-| `POST /transactions` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `GET /cashback/accruals` | ✅ | ✅ | ✅ | — | ✅ |
-| `POST /cashback/payout` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `GET /limits` | ✅ | ✅ | ✅ | — | ✅ |
-
-### Соответствие BRD
-
-| Ограничение BRD | Где отражено |
-|---|---|
-| Валюты RUB, USD, EUR | `CurrencyCode.enum` |
-| Типы комиссий fixed, percent, none | `CommissionType.enum` |
-| Статусы NEW, PROCESSING, COMPLETED, CANCELLED, REFUNDED, FAILED | `TransactionStatus.enum` |
-| Лимит 500 000 RUB | `Limit.maxAmount` (пример 500000) |
-| Идемпотентность | `409` на `POST /transactions` |
-| Сторно | `CashbackAccrual.state = reversed`, `reversedAt` |
-| Округление до 2 знаков | Отражено в описании `cashbackAmount` |
-| Выплата по доступному остатку | `PayoutCreateRequest`, `409` при нехватке остатка |
